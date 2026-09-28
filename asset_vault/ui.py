@@ -13,6 +13,10 @@ def draw_node_context_menu(self, context):
     Added at the end of Blender's own node menu, and only when a group node is
     active - right-clicking anything else leaves that menu exactly as it was.
     """
+    prefs = get_preferences(context)
+    if prefs is not None and not getattr(prefs, "context_menu", True):
+        return
+
     tree = operators.active_group_tree(context)
     if tree is None:
         return
@@ -26,7 +30,7 @@ def draw_node_context_menu(self, context):
         icon='FILE_TICK',
     ).group_name = tree.name
 
-    target = library.target_library(context, get_preferences(context))
+    target = library.target_library(context, prefs)
     if target is not None and library.find_copy(target[1], tree.name):
         layout.operator(
             "asset_vault.update_group",

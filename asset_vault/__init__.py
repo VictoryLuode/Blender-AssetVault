@@ -2,15 +2,20 @@
 
 Blender can already store assets in a library, but the route goes through the
 Asset Browser: mark, pick a library, pick a catalog, confirm, and repeat the
-whole thing when the group changes.  Asset Vault keeps the two steps that
-actually matter and puts them where the group is:
+whole thing when the group changes.  Asset Vault keeps the work around the group
+itself, and puts all of it behind one key:
 
+    T                         ->  the Asset Vault menu (every command, one list)
     right-click a Group node  ->  Save to Asset Library
     (edit the group)          ->  right-click  ->  Update Library Copy
 
+The key is a preference (`Asset Vault Settings`), so it can be changed without
+going through Blender's global keymap.
+
 The group is written as one .blend file inside the library, catalogued under
 "Group", which is the catalog name the node editor's Add menu reads - so a saved
-group is immediately available from Shift+A > Group, in every file.
+group is immediately available from Shift+A > Group, in every file.  A library
+copy can also be kept out of the Add menus while staying in the Asset Browser.
 
 Nothing about the current file is changed by a save: the node group is marked as
 an asset only for the duration of the write.
@@ -30,21 +35,28 @@ bl_info = {
     "author": "victoryluode",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
-    "location": "Node editor > right-click a Group node",
+    "location": "Node editor > T (changeable in the add-on preferences), or right-click a Group node",
     "description": "Save and update node groups in an asset library without leaving the node editor",
     "category": "Asset Management",
 }
 
-from . import library, operators, props, ui  # noqa: E402,F401
+from . import keymap, library, menu, operators, props, ui  # noqa: E402,F401
 
 
 def register():
     props.register()
     operators.register()
     ui.register()
+    menu.register()
+    keymap.register_classes()
+    # Last, so the key is bound from whatever the preferences already say.
+    keymap.register_from_preferences(props.get_preferences(bpy.context))
 
 
 def unregister():
+    keymap.unregister()
+    keymap.unregister_classes()
+    menu.unregister()
     ui.unregister()
     operators.unregister()
     props.unregister()

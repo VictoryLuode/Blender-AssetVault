@@ -8,6 +8,25 @@ from . import library
 # Identifier used when this machine has no asset library configured at all.
 _NO_LIBRARY = "__none__"
 
+#: Key the menu opens on until the user picks another one.
+DEFAULT_SHORTCUT = "T"
+
+
+def shortcut_label(prefs) -> str:
+    """The shortcut spelled the way the preferences and the menu show it."""
+    key = (getattr(prefs, "shortcut_key", DEFAULT_SHORTCUT) or "").strip().upper()
+    if not key:
+        return "not set"
+    parts = []
+    if getattr(prefs, "shortcut_ctrl", False):
+        parts.append("Ctrl")
+    if getattr(prefs, "shortcut_shift", False):
+        parts.append("Shift")
+    if getattr(prefs, "shortcut_alt", False):
+        parts.append("Alt")
+    parts.append(key)
+    return "+".join(parts)
+
 
 def library_items(self, context):
     items = [(name, name, path) for name, path in library.user_libraries()]
@@ -50,6 +69,24 @@ class ASSETVAULT_AP_preferences(bpy.types.AddonPreferences):
         default=library.DEFAULT_CATALOG,
     )
 
+    # The shortcut lives here rather than only in Blender's keymap editor: the
+    # menu is the add-on's one entry point, so the key that opens it belongs with
+    # the add-on's own settings.  The keymap item is rebuilt from these values.
+    shortcut_key: bpy.props.StringProperty(
+        name="Key",
+        description="Key that opens the Asset Vault menu in the node editor",
+        default=DEFAULT_SHORTCUT,
+    )
+    shortcut_ctrl: bpy.props.BoolProperty(name="Ctrl", default=False)
+    shortcut_shift: bpy.props.BoolProperty(name="Shift", default=False)
+    shortcut_alt: bpy.props.BoolProperty(name="Alt", default=False)
+
+    context_menu: bpy.props.BoolProperty(
+        name="Also in the node right-click menu",
+        description="Keep Save and Update on the node editor's own context menu as well",
+        default=True,
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "follow_asset_browser")
@@ -60,7 +97,17 @@ class ASSETVAULT_AP_preferences(bpy.types.AddonPreferences):
 
         layout.separator()
         box = layout.box()
-        box.label(text="Right-click a Group node in the node editor.", icon='INFO')
+        box.label(text="Menu", icon='MENU_PANEL')
+        row = box.row(align=True)
+        row.label(text="Shortcut")
+        row.label(text=shortcut_label(self))
+        row.operator("asset_vault.set_shortcut", text="Set", icon='KEYINGSET')
+        row.operator("asset_vault.set_shortcut", text="", icon='LOOP_BACK').reset = True
+        box.prop(self, "context_menu")
+
+        layout.separator()
+        box = layout.box()
+        box.label(text="The shortcut opens the menu in any node editor.", icon='INFO')
         box.label(text="Saved groups show up in the Add menu (Shift+A > Group).")
 
 

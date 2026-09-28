@@ -1,8 +1,9 @@
-"""The two commands: save the group into the library, and update the copy already there."""
+"""The commands: save the group into the library, update the copy already there,
+and take that library copy in or out of the node Add menus."""
 from __future__ import annotations
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, StringProperty
 
 from . import library, props
 
@@ -117,7 +118,50 @@ class ASSETVAULT_OT_update_group(_GroupToLibrary, bpy.types.Operator):
     _update = True
 
 
-classes = (ASSETVAULT_OT_save_group, ASSETVAULT_OT_update_group)
+class ASSETVAULT_OT_set_menu_visibility(bpy.types.Operator):
+    """Keep this group's library copy out of the node Add menus, or put it back"""
+
+    bl_idname = "asset_vault.set_menu_visibility"
+    bl_label = "Add Menu Visibility"
+    bl_options = {'REGISTER'}
+
+    group_name: StringProperty(name="Group", default="")
+    visible: BoolProperty(name="Show in the Add menu", default=True)
+
+    def execute(self, context):
+        prefs = props.get_preferences(context)
+        target = library.target_library(context, prefs)
+        if target is None:
+            configured = getattr(prefs, "default_library", "") if prefs is not None else ""
+            if configured:
+                self.report(
+                    {'WARNING'},
+                    "The library '%s' is not configured any more - pick one in the add-on preferences"
+                    % configured,
+                )
+            else:
+                self.report({'WARNING'}, "No asset library configured - add one in Edit > Preferences > File Paths")
+            return {'CANCELLED'}
+
+        tree = resolve_tree(context, self.group_name)
+        name = tree.name if tree is not None else self.group_name
+        filepath = library.find_copy(target[1], name)
+        if filepath is None:
+            self.report({'WARNING'}, "No copy of '%s' in %s yet - save it first" % (name, target[0]))
+            return {'CANCELLED'}
+
+        ok, message = library.set_menu_visibility(filepath, name, self.visible)
+        if ok:
+            library.refresh_libraries()
+        self.report({'INFO'} if ok else {'WARNING'}, message)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+classes = (
+    ASSETVAULT_OT_save_group,
+    ASSETVAULT_OT_update_group,
+    ASSETVAULT_OT_set_menu_visibility,
+)
 
 
 def register():

@@ -204,23 +204,55 @@ def write_group(library_dir: str, node_tree, catalog_uuid: str, filepath=None) -
     The asset mark and the catalog only exist for the duration of the write - the
     catalog id has to be on the datablock for Blender to store it, but a save must
     not change anything in the file the user is working in.
+
+    The hidden tree-type field is what the node editor's Add menu filters on (see
+    the note on MENU_TYPE_PROP), so it is set here rather than left to whichever
+    marking path marked the group.  An asset the user hid on purpose stays hidden:
+    a save is not the place to undo that.
     """
     filepath = Path(filepath) if filepath is not None else asset_path(library_dir, node_tree.name)
 
     marked_here = not node_tree.asset_data
     if marked_here:
         node_tree.asset_mark()
-    original_catalog = str(node_tree.asset_data.catalog_id)
+    asset = node_tree.asset_data
+    original_catalog = str(asset.catalog_id)
+    # asset_mark() writes the tree-type field itself, so a temporary mark still has
+    # to have it taken out again when the library copy is meant to stay hidden.
+    original_type = (
+        None
+        if marked_here
+        else (asset[MENU_TYPE_PROP] if MENU_TYPE_PROP in asset else None)
+    )
+    stays_hidden = filepath.is_file() and menu_visibility(filepath, node_tree.name) is False
 
     try:
-        node_tree.asset_data.catalog_id = catalog_uuid
+        asset.catalog_id = catalog_uuid
+        tree_type = TREE_TYPE_VALUES.get(node_tree.bl_idname)
+        if tree_type is not None:
+            if stays_hidden:
+                try:
+                    del asset[MENU_TYPE_PROP]
+                except (KeyError, TypeError):
+                    pass
+            else:
+                asset[MENU_TYPE_PROP] = tree_type
+
         datablocks = {node_tree, *_nested_groups(node_tree)}
         bpy.data.libraries.write(str(filepath), datablocks, fake_user=True)
     finally:
         if marked_here:
             node_tree.asset_clear()
         else:
-            node_tree.asset_data.catalog_id = original_catalog
+            asset.catalog_id = original_catalog
+            if original_type is None:
+                try:
+                    del asset[MENU_TYPE_PROP]
+                except (KeyError, TypeError):
+                    pass
+            else:
+                asset[MENU_TYPE_PROP] = original_type
+        _VISIBILITY_CACHE.clear()
 
     return filepath
 
@@ -243,3 +275,164 @@ def refresh_libraries() -> str:
         except Exception:
             continue
     return ""
+
+
+# ------------------------------------------------------------------ Add menu visibility
+
+#: Blender keeps a node group asset's tree type in a hidden field on the asset
+#: metadata, and the node editor's Add menu skips every asset that does not carry
+#: it (`build_catalog_tree()` in space_node/add_menu_assets.cc).  Taking the field
+#: out is therefore the only way to keep an asset out of the Add menu while it
+#: stays a normal asset in the Asset Browser.  The values are Blender's NTREE_*
+#: enum; a test reads them back out of Blender so they cannot drift silently.
+MENU_TYPE_PROP = "type"
+TREE_TYPE_VALUES = {
+    "ShaderNodeTree": 0,
+    "CompositorNodeTree": 1,
+    "TextureNodeTree": 2,
+    "GeometryNodeTree": 3,
+}
+
+#: ID collections that make a library file "not ours" - a downloaded pack, or a
+#: file saved by hand with more than node groups in it.  Never rewritten.
+_FOREIGN_ID_COLLECTIONS = (
+    "actions",
+    "armatures",
+    "collections",
+    "curves",
+    "images",
+    "materials",
+    "meshes",
+    "objects",
+    "scenes",
+    "textures",
+    "worlds",
+)
+
+#: (path, mtime, size) -> visibility, so a menu redraw does not re-read a file.
+_VISIBILITY_CACHE: dict = {}
+
+
+def load_library_groups(filepath) -> dict:
+    """Node groups in a library file as {name in the file: datablock}.
+
+    Keyed by the name the file gives them, not by the name they end up with:
+    loading a group the session already has makes Blender rename the newcomer
+    ("Scatter.001"), and matching on those names would silently miss.
+
+    The list handed to `bpy.data.libraries.load` comes back holding the loaded
+    datablocks instead of the names, so it is copied up front.  What comes back
+    is owned by the caller and must be dropped again - see `release_groups()`.
+    """
+    with bpy.data.libraries.load(str(filepath), link=False) as (src, dst):
+        names = [entry for entry in (src.node_groups or [])]
+        dst.node_groups = list(names)
+    loaded = [entry for entry in (dst.node_groups or []) if entry is not None]
+    return dict(zip(names, loaded))
+
+
+def release_groups(groups) -> None:
+    """Drop datablocks that were loaded out of a library file.
+
+    Without this the session would keep a second copy of every group in the file
+    (and a save would then write those copies out again).
+    """
+    for entry in groups.values() if isinstance(groups, dict) else groups:
+        try:
+            bpy.data.node_groups.remove(entry)
+        except Exception:
+            pass
+
+
+def holds_only_groups(filepath) -> bool:
+    """True when that library file holds node groups and nothing else."""
+    try:
+        with bpy.data.libraries.load(str(filepath), link=False) as (src, _dst):
+            for name in _FOREIGN_ID_COLLECTIONS:
+                if list(getattr(src, name, None) or []):
+                    return False
+    except Exception:
+        return False
+    return True
+
+
+def menu_visibility(filepath, group_name):
+    """"Is this asset in the node Add menus?" - None when it is not ours.
+
+    None covers both "no group of that name here" and "a group that is not an
+    asset": nothing to switch either way.
+    """
+    filepath = Path(filepath)
+    try:
+        stat = filepath.stat()
+        stamp = (str(filepath), group_name, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+    if stamp in _VISIBILITY_CACHE:
+        return _VISIBILITY_CACHE[stamp]
+
+    groups = load_library_groups(filepath)
+    try:
+        tree = groups.get(group_name)
+        found = None if tree is None or tree.asset_data is None else MENU_TYPE_PROP in tree.asset_data
+    finally:
+        release_groups(groups)
+
+    _VISIBILITY_CACHE[stamp] = found
+    return found
+
+
+def set_menu_visibility(filepath, group_name, visible: bool) -> tuple[bool, str]:
+    """Put an asset into the node Add menus, or take it out of them.
+
+    The file is rewritten only when it holds nothing but node groups, and the
+    loaded copies are dropped again afterwards, so nothing accumulates in the
+    session the user is working in.
+    """
+    filepath = Path(filepath)
+    if not holds_only_groups(filepath):
+        return False, "%s holds more than node groups - not rewriting it" % filepath.name
+
+    groups = load_library_groups(filepath)
+    parked = None
+    try:
+        tree = groups.get(group_name)
+        if tree is None or tree.asset_data is None:
+            return False, "No asset called '%s' in %s" % (group_name, filepath.name)
+
+        # A group the session already holds forces Blender to rename the loaded copy
+        # ("Name.001"), and libraries.write() stores the name a datablock carries -
+        # which would rename the asset inside the library file.  Park the session's
+        # own datablock for the duration and give its name back afterwards.
+        if tree.name != group_name:
+            occupied = bpy.data.node_groups.get(group_name)
+            if occupied is not None:
+                occupied.name = group_name + ".vault-parked"
+                parked = occupied
+            tree.name = group_name
+
+        if visible:
+            value = TREE_TYPE_VALUES.get(tree.bl_idname)
+            if value is None:
+                return False, "Unknown node tree type '%s'" % tree.bl_idname
+            tree.asset_data[MENU_TYPE_PROP] = value
+            message = "'%s' is back in the Add menu" % group_name
+        else:
+            try:
+                del tree.asset_data[MENU_TYPE_PROP]
+            except (KeyError, TypeError):
+                pass
+            message = "'%s' is hidden from the Add menu (still in the Asset Browser)" % group_name
+
+        bpy.data.libraries.write(str(filepath), set(groups.values()), fake_user=True)
+    finally:
+        release_groups(groups)
+        if parked is not None:
+            try:
+                parked.name = group_name
+            except Exception:
+                pass
+
+    _VISIBILITY_CACHE.clear()
+    return True, message
+

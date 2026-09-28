@@ -101,20 +101,47 @@ class RecordedCall:
         self.text = text
         self.icon = icon
         self.group_name = None
+        self.enabled = True
+
+
+class FakeRow:
+    """A sub-layout: only `enabled` matters, and it sticks to what it draws."""
+
+    def __init__(self, parent, align=False):
+        self.parent = parent
+        self.enabled = True
+
+    def operator(self, idname, text='', icon=''):
+        call = RecordedCall(idname, text, icon)
+        call.enabled = self.enabled
+        self.parent.calls.append(call)
+        return call
+
+    def label(self, text='', icon=''):
+        self.parent.labels.append(text)
 
 
 class FakeLayout:
     def __init__(self):
         self.calls = []
+        self.labels = []
         self.separators = 0
+        self.enabled = True
 
     def separator(self):
         self.separators += 1
 
     def operator(self, idname, text='', icon=''):
         call = RecordedCall(idname, text, icon)
+        call.enabled = self.enabled
         self.calls.append(call)
         return call
+
+    def label(self, text='', icon=''):
+        self.labels.append(text)
+
+    def row(self, align=False):
+        return FakeRow(self, align)
 
 
 def fake_context(node=None, preferences=None):
@@ -149,6 +176,9 @@ def test_addon(asset_vault):
     check("add-on is enabled", enabled, "loaded=%s" % loaded)
     check("save operator is registered", hasattr(bpy.ops.asset_vault, "save_group"))
     check("update operator is registered", hasattr(bpy.ops.asset_vault, "update_group"))
+    check("the menu operator is registered", hasattr(bpy.ops.asset_vault, "menu"))
+    check("the visibility command is registered", hasattr(bpy.ops.asset_vault, "set_menu_visibility"))
+    check("the shortcut capture is registered", hasattr(bpy.ops.asset_vault, "set_shortcut"))
 
     source = open(asset_vault.__file__, encoding="utf-8").read()
     module = ast.parse(source)
@@ -432,6 +462,200 @@ def test_menu(ui, library, operators, work):
     check("an empty selection gets no entries", layout.calls == [], layout.calls)
 
 
+def addon_preferences():
+    entry = bpy.context.preferences.addons.get("asset_vault")
+    return entry.preferences if entry is not None else None
+
+
+def keymap_items(keymap):
+    """Every binding of ours that Blender actually holds, read back out of it."""
+    manager = getattr(bpy.context, "window_manager", None)
+    config = getattr(getattr(manager, "keyconfigs", None), "addon", None)
+    if config is None:
+        return []
+    keymap_map = config.keymaps.get(keymap.KEYMAP_NAME)
+    if keymap_map is None:
+        return []
+    return [
+        (item.type, item.ctrl, item.shift, item.alt)
+        for item in keymap_map.keymap_items
+        if item.idname == keymap.OPEN_OPERATOR
+    ]
+
+
+def test_shortcut(keymap, props, menu, work):
+    section("the shortcut")
+
+    check("the default key is T", props.DEFAULT_SHORTCUT == "T")
+    check("a modifier on its own is not a key", keymap.is_modifier_only("LEFT_SHIFT"))
+    check("a real key is not a modifier", not keymap.is_modifier_only("T"))
+    check("mouse movement is ignored", keymap.is_ignorable("MOUSEMOVE"))
+    check("the menu operator is registered", hasattr(bpy.ops.asset_vault, "menu"))
+    check("the capture operator is registered", hasattr(bpy.ops.asset_vault, "set_shortcut"))
+    check("the menu itself is registered", hasattr(bpy.types, "ASSETVAULT_MT_menu"))
+
+    prefs = addon_preferences()
+    check("the preferences carry the shortcut", prefs is not None and hasattr(prefs, "shortcut_key"))
+    if prefs is None:
+        return
+
+    bound = keymap_items(keymap)
+    check("enabling the add-on bound the menu to a key", bound == [("T", False, False, False)], bound)
+
+    ok, message = keymap.apply_shortcut(bpy.context, "F9", ctrl=True)
+    check("the shortcut can be changed", ok, message)
+    bound = keymap_items(keymap)
+    check("exactly one binding is kept", len(bound) == 1, bound)
+    check("the new binding is the one asked for", bound == [("F9", True, False, False)], bound)
+    check("the preference followed", prefs.shortcut_key == "F9" and prefs.shortcut_ctrl is True,
+          (prefs.shortcut_key, prefs.shortcut_ctrl))
+    check("the label reads back", props.shortcut_label(prefs) == "Ctrl+F9", props.shortcut_label(prefs))
+    check("the menu names the shortcut", menu.draw_menu.__doc__ is not None)
+
+    ok, message = keymap.apply_shortcut(bpy.context, "")
+    check("an empty key clears the binding", ok and keymap_items(keymap) == [], keymap_items(keymap))
+    check("the label says so", props.shortcut_label(prefs) == "not set", props.shortcut_label(prefs))
+
+    ok, message = keymap.apply_shortcut(bpy.context, "T")
+    check("the default can be put back", ok and prefs.shortcut_key == "T", message)
+    check("and it is bound again", keymap_items(keymap) == [("T", False, False, False)], keymap_items(keymap))
+
+
+def test_menu_visibility(library, operators, work):
+    section("Add menu visibility")
+
+    library_dir = os.path.join(work, "visibility_library")
+    os.makedirs(library_dir, exist_ok=True)
+
+    # The tree-type numbers belong to Blender, not to us: read them back out of it
+    # so a change there fails here instead of quietly doing nothing in the GUI.
+    wrong = []
+    for idname, expected in library.TREE_TYPE_VALUES.items():
+        probe = bpy.data.node_groups.new("Probe " + idname, idname)
+        probe.asset_mark()
+        actual = probe.asset_data[library.MENU_TYPE_PROP]
+        if actual != expected:
+            wrong.append((idname, expected, actual))
+        bpy.data.node_groups.remove(probe)
+    check("the tree type values match this Blender", not wrong, wrong)
+
+    entry = bpy.context.preferences.addons.get("asset_vault")
+    prefs = entry.preferences if entry is not None else FakePrefs()
+    register_library(LIBRARY_NAME, library_dir)
+    prefs.follow_asset_browser = False
+    prefs.default_library = LIBRARY_NAME
+    prefs.catalog_path = "Group"
+
+    tree = make_group("Hidden Helper", node_count=1)
+    catalog_uuid = library.ensure_catalog(library_dir, "Group")
+    path = library.write_group(library_dir, tree, catalog_uuid)
+
+    check("a saved group starts out in the Add menu", library.menu_visibility(path, tree.name) is True)
+    check("a group that is not ours reads as unknown", library.menu_visibility(path, "Nope") is None)
+
+    before = len(bpy.data.node_groups)
+    ok, message = library.set_menu_visibility(path, tree.name, False)
+    check("it can be hidden", ok, message)
+    check("the file agrees", library.menu_visibility(path, tree.name) is False)
+    check("nothing was left behind in the session", len(bpy.data.node_groups) == before,
+          "%d -> %d" % (before, len(bpy.data.node_groups)))
+    check("the group is still in the library", library.contains_group(path, tree.name))
+
+    groups = library.load_library_groups(path)
+    try:
+        found = groups.get(tree.name)
+        check("it is still an asset", found is not None and found.asset_data is not None)
+        check(
+            "its catalog survived",
+            found is not None and str(found.asset_data.catalog_id) == catalog_uuid,
+            str(found.asset_data.catalog_id) if found is not None else "",
+        )
+    finally:
+        library.release_groups(groups)
+
+    ok, message = library.set_menu_visibility(path, tree.name, True)
+    check("it can be shown again", ok and library.menu_visibility(path, tree.name) is True, message)
+
+    # A save must not undo a deliberate hide.
+    library.set_menu_visibility(path, tree.name, False)
+    operators.save_group(fake_context(), tree, prefs)
+    check("an update keeps it hidden", library.menu_visibility(path, tree.name) is False)
+    check("and the session's group was not touched", tree.name == "Hidden Helper", tree.name)
+
+    result = bpy.ops.asset_vault.set_menu_visibility(group_name=tree.name, visible=False)
+    check("the command does the same from the operator", result == {'FINISHED'}, result)
+    check("and the file reflects it", library.menu_visibility(path, tree.name) is False)
+
+    # A file with anything but node groups in it is somebody else's - never rewritten.
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    foreign = os.path.join(library_dir, "not ours.blend")
+    bpy.data.libraries.write(foreign, {cube}, fake_user=True)
+    ok, message = library.set_menu_visibility(foreign, tree.name, False)
+    check("a file holding more than node groups is refused", not ok, message)
+    bpy.data.objects.remove(cube, do_unlink=True)
+
+
+def test_vault_menu(menu, library, operators, work):
+    section("the one menu")
+
+    library_dir = os.path.join(work, "vault_menu_library")
+    os.makedirs(library_dir, exist_ok=True)
+    register_library(LIBRARY_NAME, library_dir)
+
+    entry = bpy.context.preferences.addons.get("asset_vault")
+    prefs = entry.preferences if entry is not None else FakePrefs()
+    prefs.follow_asset_browser = False
+    prefs.default_library = LIBRARY_NAME
+    prefs.catalog_path = "Group"
+    preferences = bpy.context.preferences
+
+    layout = FakeLayout()
+    menu.draw_menu(layout, fake_context(None, preferences))
+    saved = [call for call in layout.calls if call.idname == "asset_vault.save_group"]
+    check("saving is on the menu but out of reach with nothing selected",
+          bool(saved) and saved[0].enabled is False, [(c.idname, c.enabled) for c in layout.calls])
+    check("it says what to do instead", any("Select" in text for text in layout.labels), layout.labels)
+    check("the settings entries are always on it",
+          [call.idname for call in layout.calls][-2:] ==
+          ["asset_vault.set_shortcut", "preferences.addon_show"],
+          [call.idname for call in layout.calls])
+
+    tree = make_group("Menu Draw Group", node_count=1)
+    operators.save_group(fake_context(), tree, prefs)
+    node = FakeNode("GROUP", tree)
+
+    layout = FakeLayout()
+    menu.draw_menu(layout, fake_context(node, preferences))
+    check(
+        "a saved group gets the whole menu",
+        [call.idname for call in layout.calls] == [
+            "asset_vault.save_group",
+            "asset_vault.update_group",
+            "asset_vault.set_menu_visibility",
+            "asset_vault.set_shortcut",
+            "preferences.addon_show",
+        ],
+        [call.idname for call in layout.calls],
+    )
+    switch = layout.calls[2]
+    check("the switch offers to hide it", switch.text == "Hide from the Add Menu", switch.text)
+    check("and would show it again if used", switch.visible is False, switch.visible)
+
+    library.set_menu_visibility(library.find_copy(library_dir, tree.name), tree.name, False)
+    layout = FakeLayout()
+    menu.draw_menu(layout, fake_context(node, preferences))
+    switch = layout.calls[2]
+    check("once hidden, the menu offers the way back", switch.text == "Show in the Add Menu", switch.text)
+    check("and would hide it if used", switch.visible is True, switch.visible)
+
+    layout = FakeLayout()
+    menu.draw_menu(layout, fake_context(FakeNode("TRANSFORM"), preferences))
+    check("a non-group node still gets the settings half",
+          "asset_vault.save_group" in [call.idname for call in layout.calls],
+          [call.idname for call in layout.calls])
+
+
 # --------------------------------------------------------------------------- main
 
 def main():
@@ -458,6 +682,9 @@ def main():
     library = importlib.import_module("asset_vault.library")
     operators = importlib.import_module("asset_vault.operators")
     ui = importlib.import_module("asset_vault.ui")
+    keymap = importlib.import_module("asset_vault.keymap")
+    menu = importlib.import_module("asset_vault.menu")
+    props = importlib.import_module("asset_vault.props")
 
     guarded("add-on", lambda: test_addon(asset_vault))
     guarded("file names", lambda: test_file_names(library, work))
@@ -467,6 +694,9 @@ def main():
     guarded("no library", lambda: test_no_library(library, operators, work))
     guarded("library resolution", lambda: test_library_resolution(library, operators, work))
     guarded("menu", lambda: test_menu(ui, library, operators, work))
+    guarded("shortcut", lambda: test_shortcut(keymap, props, menu, work))
+    guarded("Add menu visibility", lambda: test_menu_visibility(library, operators, work))
+    guarded("the one menu", lambda: test_vault_menu(menu, library, operators, work))
 
     failed = [r for r in RESULTS if not r["passed"]]
     print("\n%d checks, %d failed" % (len(RESULTS), len(failed)))
