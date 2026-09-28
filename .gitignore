@@ -15,3 +15,6 @@ CLAUDE.md
 docs/handoffs/
 # local agent scratch (plans, drafts)
 .hermes/
+
+# local backups left by tooling — never commit these
+*.bak-*
