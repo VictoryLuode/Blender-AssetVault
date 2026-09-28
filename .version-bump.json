@@ -1,0 +1,19 @@
+{
+  "_comment": "release.sh 的唯一配置：本仓的版本落点、CHANGELOG、打包命令、产物。改这里，不改 release.sh。",
+  "changelog": "CHANGELOG.md",
+  "title_prefix": "Asset Vault",
+  "package": "",
+  "artifacts": "",
+  "summary_placeholder": "TODO: what changed, in the user's words",
+  "targets": [
+    {
+      "path": "asset_vault/__init__.py",
+      "kind": "py_version"
+    },
+    {
+      "path": "asset_vault/__init__.py",
+      "kind": "bl_info_tuple",
+      "_why": "两处都要改：__version__ 是代码读的，bl_info 是 Blender 读的（必须是字面量）"
+    }
+  ]
+}
