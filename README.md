@@ -11,7 +11,7 @@ one key in the node editor, and the group's own right-click menu.
 
 | | |
 |---|---|
-| Version | 0.2.0 |
+| Version | 0.1.0 |
 | Blender | 4.2 LTS or newer (tested on 4.2.23, 4.5.14, 5.2.2) |
 | Scope | Node groups (geometry, shader, compositor) |
 
@@ -58,10 +58,23 @@ can put the field back, and a future Blender may replace this mechanism.
 
 ## Install
 
-```bash
-./install.sh                 # newest Blender on this machine
-./install.sh "<...>/scripts/addons"   # or a specific one
+The add-on's folder goes into Blender's user `scripts/addons`; the installer works out
+which one, or takes the path.  On Windows, PowerShell is enough — no bash, no git:
+
+```powershell
+.\install.ps1                 # newest Blender on this machine
+.\install.ps1 "<...>\scripts\addons"   # or a specific one
 ```
+
+git-bash / MSYS / WSL:
+
+```bash
+./install.sh                  # newest Blender on this machine
+./install.sh "<...>/scripts/addons"    # or a specific one
+```
+
+If Windows refuses to run the script:
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
 
 Then enable **Asset Vault** in `Edit ▸ Preferences ▸ Add-ons`.
 
@@ -88,14 +101,3 @@ One group per file:
 
 Save and update are the same write, which is what keeps the model predictable: there is
 exactly one copy in the library, and it is always the last one saved.
-
-## Tests
-
-```bash
-tests/run_tests.sh                    # newest Blender
-tests/run_tests.sh /path/to/blender.exe
-```
-
-Headless, with a throwaway Blender configuration: the real preferences, the real add-ons
-folder and the real asset libraries are never touched.  115 checks, all green on Blender
-4.2.23, 4.5.14 and 5.2.2.

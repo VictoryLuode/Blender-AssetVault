@@ -145,11 +145,54 @@ else
 fi
 
 # --------------------------------------------------------- 4. 安装脚本
-step "4. installer prerequisites"
+step "4. installers"
 if bash -n install.sh 2>/dev/null; then
   pass "install.sh parses"
 else
   fail "install.sh has a syntax error"
+fi
+
+# 两扇门（bash 的 install.sh、Windows 的 install.ps1）必须落到完全相同的文件：
+# 各装进一棵临时树，再和 asset_vault/ 逐文件比。PS 只在一部分机器上有——
+# 没有时明确 skip，不假装比过。
+if [ ! -f install.ps1 ]; then
+  fail "install.ps1 is missing — Windows users have PowerShell, not bash"
+else
+  PS="$(command -v powershell.exe || command -v pwsh || true)"
+  if [ -z "$PS" ]; then
+    echo "   note: no PowerShell on this machine — install.ps1 not exercised (Windows-only door)"
+  else
+    STAGE="$(mktemp -d "${TMPDIR:-/tmp}/avinstall.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$STAGE" ] || [ ! -d "$STAGE" ]; then
+      fail "installer smoke test: cannot create a scratch tree"
+    else
+      mkdir -p "$STAGE/bash/addons" "$STAGE/ps/addons"
+      bash_door=0; ps_door=0
+      ./install.sh "$STAGE/bash/addons" >/dev/null 2>&1 && bash_door=1
+      ps_win="$(cygpath -w "$STAGE/ps/addons" 2>/dev/null || printf '%s' "$STAGE/ps/addons")"
+      script_win="$(cygpath -w "$REPO/install.ps1" 2>/dev/null || printf '%s' "$REPO/install.ps1")"
+      "$PS" -NoProfile -ExecutionPolicy Bypass -File "$script_win" -BlenderAddons "$ps_win" >/dev/null 2>&1 && ps_door=1
+      if [ "$bash_door" -eq 1 ] && [ "$ps_door" -eq 1 ]; then
+        pass "both doors installed into a throwaway tree"
+        drift="$(diff -r --exclude=__pycache__ asset_vault "$STAGE/bash/addons/asset_vault" 2>&1
+                 diff -r --exclude=__pycache__ asset_vault "$STAGE/ps/addons/asset_vault" 2>&1)"
+        if [ -z "$drift" ]; then
+          pass "both doors landed byte-identical to asset_vault/"
+        else
+          fail "an installer drifted from asset_vault/:"
+          printf '%s\n' "$drift" | head -5
+        fi
+        if [ -n "$(find "$STAGE" -name __pycache__ -print -quit)" ]; then
+          fail "an installer left __pycache__ inside the add-on folder"
+        else
+          pass "no __pycache__ in the installed folder"
+        fi
+      else
+        fail "installer smoke test did not run (bash door=$bash_door, PowerShell door=$ps_door)"
+      fi
+      rm -rf "$STAGE"
+    fi
+  fi
 fi
 
 # --------------------------------------------------------- 汇总
