@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# git-bash / MSYS leaves these behind while the shell tests run
+.msys*
+
+# release archives
+dist/
+
+# local-only files: never published, whatever they are called
+AGENTS.md
+CLAUDE.md
+.cursorrules
+.cursor/
+docs/handoffs/
+# local agent scratch (plans, drafts)
+.hermes/
